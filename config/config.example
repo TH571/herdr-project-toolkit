@@ -1,8 +1,9 @@
-# new-project / delete-project 的默认路径
-# 复制到 ~/.config/new-project/config 并按需修改（install.sh 会自动生成）
+# Default paths for new-project / delete-project.
+# install.sh writes this file to ~/.config/new-project/config.
 
-# 工作区根：本地盘，不要放在 iCloud / Dropbox / OneDrive 等同步目录里
+# Work area root: local disk only, never inside iCloud / Dropbox / OneDrive.
 WORK_ROOT=/Users/you/Projects
 
-# 存储区根：可以放在同步盘，目录名会自动带 @<机器标识>
+# Store area root: may live on a synced disk. Directory names automatically
+# get an @<machine-label> suffix, so machines never overwrite each other.
 STORE_ROOT=/Users/you/Projects-archive

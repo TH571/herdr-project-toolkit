@@ -1,128 +1,128 @@
 ---
 name: project-init
-description: 初始化一个「工作区 / 存储区」分离的新项目，并给出两条路径的建议值。用户说「新建项目」「初始化项目」「开个新项目」「这个项目该放哪」「project init」「new project」时使用。会先探测本机情况给建议，也允许直接输入任意路径覆盖；存储区目录名自动带本机机器标识后缀（如 my-project@work-mac），多台机器各写各的目录不会互相覆盖。
+description: Scaffold a project with a separate work area and store area, and propose reasonable paths for both. Use when the user says "new project", "init a project", "create a project", "where should this project live", "set up a workspace", or asks how to separate code from deliverables. Probes the machine first and suggests paths, accepts user-supplied paths, and names the store dir with a machine label (e.g. my-project@work-mac) so multiple machines never overwrite each other.
 ---
 
-# 初始化项目（工作区 / 存储区分离）
+# Initialize a project (work area / store area)
 
-把「项目放哪、产物放哪、多台机器怎么不打架」一次对话定下来。
+Settles "where does the project live, where do deliverables go, and how do two machines avoid stepping on each other" in one conversation.
 
-## 何时使用
+## When to use
 
-- 用户要开新项目，但没说放哪个目录
-- 用户问「这个项目该放哪」「工作区和存储区怎么分」
-- 已有项目文件夹，不确定该不该放进云盘同步目录
+- The user wants to start a project but has not said where it should live
+- The user asks "where should this project go" or "how do I separate code from deliverables"
+- An existing folder may or may not belong inside a cloud sync directory
 
-**不适用**：已有项目的归档/清理；也不要改已存在的项目结构。
+**Not for**: archiving or cleaning up an existing project; do not use it to restructure a project that already exists.
 
-## 核心模型：三区
+## Core model: three zones
 
-| 区 | 作用 | 建议位置 | 是否同步 |
+| Zone | Purpose | Suggested location | Synced |
 |---|---|---|---|
-| 工作区 | 代码、草稿、日志、缓存、中间数据 | `<工作区根>/<项目>`（本地盘） | **否**，两台机器写会冲突 |
-| 存储区 | 唯一成品地，**agent 直接写这里** | `<存储区根>/<项目>@<机器标识>` | 是，每台机器一个目录 |
-| Herdr 空间 | 只决定「终端从哪起」 | 由 `new-project` 自动创建 | 否 |
+| Work area | code, drafts, logs, caches, intermediate data | `<WORK_ROOT>/<project>` on a local disk | **No** — two machines there produce conflict copies |
+| Store area | the only home of deliverables, **agents write here directly** | `<STORE_ROOT>/<project>@<machine-label>` | Yes, one directory per machine |
+| Herdr space | only decides where a terminal starts | created automatically by `new-project` | No |
 
-一句话：**工作区可整目录删除（git 兜底），存储区是成品唯一所在，且按机器分区。**
+In one line: **the work area can be deleted at any time (git is the safety net); the store area is the only home of deliverables, partitioned per machine.**
 
-## 第一步：先探测，再建议
+## Step 1: probe before suggesting
 
-不要直接问「你要放哪」，先拿事实：
+Do not open by asking "where do you want it". Gather facts first:
 
 ```sh
-new-project --help | head -22          # 看默认值与当前配置
+new-project --help | head -22          # defaults and current config
 cat ~/.config/new-project/config       # WORK_ROOT / STORE_ROOT
-scutil --get LocalHostName 2>/dev/null || hostname -s   # 本机主机名
-cat ~/.config/new-project/machines.conf                 # 主机名 → 机器标识
-ls -d <工作区根>/<项目> 2>/dev/null                      # 同名是否已存在
-ls -d <存储区根>/<项目>@* 2>/dev/null                    # 另一台机器是否建过
+scutil --get LocalHostName 2>/dev/null || hostname -s   # hostname
+cat ~/.config/new-project/machines.conf                 # hostname -> machine label
+ls -d <WORK_ROOT>/<project> 2>/dev/null                 # name already taken?
+ls -d <STORE_ROOT>/<project>@* 2>/dev/null              # did another machine create it?
 df -h ~ | tail -1
 ```
 
-建议规则：
+Suggestion rules:
 
-1. **工作区**：用配置里的 `WORK_ROOT`；若用户历史项目都在某个目录，建议沿用。**绝不建议把工作区放进 iCloud / Dropbox / OneDrive / 坚果云等同步目录**。
-2. **存储区**：用配置里的 `STORE_ROOT`，目录名 `<项目>@<机器标识>`。
-3. **机器标识查不到映射**（新机器第一次用）：先 `scutil --get LocalHostName`，再往 `machines.conf` 补一行 `<主机名>=<机器标识>`。否则目录名会退化成主机名。
-4. **已存在同名**：先报告，不要自动 `--force`，让用户决定改名还是补文件。
-5. **另一台机器的同名目录**（`<项目>@<别的标识>`）：提醒那是另一台写的，不要覆盖，也不要用 `--no-machine-suffix` 硬合并。
+1. **Work area**: use `WORK_ROOT` from the config; if the user's other projects all live somewhere else, suggest following that habit. **Never suggest putting the work area inside iCloud / Dropbox / OneDrive / Google Drive / Nextcloud.**
+2. **Store area**: use `STORE_ROOT` from the config; directory name is `<project>@<machine-label>`.
+3. **Machine label missing from the map** (first run on a new machine): run `scutil --get LocalHostName`, then add `<hostname>=<label>` to `machines.conf`. Otherwise the directory name falls back to the raw hostname.
+4. **Name already exists**: report it and let the user choose rename or `--force`; never force automatically.
+5. **A directory from another machine** (`<project>@<other-label>`): warn that it belongs to that machine; do not overwrite it and do not merge with `--no-machine-suffix`.
 
-## 第二步：给用户四个选项
+## Step 2: offer four options
 
-| 选项 | 含义 |
+| Option | Meaning |
 |---|---|
-| A. 都用建议路径 | 工作区 + 存储区都按配置 |
-| B. 只改工作区 | 用户直接给路径，如 `/Volumes/SSD/proj` |
-| C. 只改机器标识或后缀写法 | 换标识、换分隔符，或不要后缀 |
-| D. 两个都自己指定 | 各给一个路径 |
+| A. Use the suggested paths | work area + store area as configured |
+| B. Change the work area only | user supplies a path, e.g. `/Volumes/SSD/proj` |
+| C. Change the machine label or suffix style | different label, different separator, or no suffix |
+| D. Specify both | user supplies both paths |
 
-用户直接输入路径时**原样接受**，只校验三项：可写、不是根目录、两区不重叠或互相嵌套。有问题请用户再给一个，不要自作主张替换。
+Accept user-supplied paths verbatim, validating only three things: writable, not a filesystem root, and the two areas neither equal nor nested. If a path fails, ask for another — do not silently substitute your own.
 
-## 第三步：先 dry-run，再落地
-
-```sh
-new-project "<项目名>" --dry-run
-# 复述两条路径（注意存储区带 @机器标识）给用户确认，然后去掉 --dry-run
-new-project "<项目名>" --git
-```
-
-参数：`--git`（初始化仓库）、`--no-space`（不建 Herdr 空间）、`--readonly`（存储区建好即只读）、`--machine <标识>`、`--suffix-sep <字符>`、`--no-machine-suffix`。
-
-生成结果：
-
-```
-<工作区>/<项目>/     src/ tmp/ logs/ AGENTS.md .gitignore PROGRESS.md .claude/settings.json
-<存储区>/<项目>@<机器标识>/   OWNER（machine / hostname / store_dir / note）
-```
-
-**默认会顺手建一个同名 Herdr 空间**，folder 指向工作区。`herdr-app` 不存在时只警告、不中断。
-
-**建完必须验证空间**（folder 建后不可改，失败又只警告，不能假定成功）：
+## Step 3: dry run first, then create
 
 ```sh
-herdr-app ls | grep -A4 "<项目名>"      # folder 是否等于工作区绝对路径
+new-project "<project>" --dry-run
+# restate both paths (the store one carries @<label>), then drop --dry-run
+new-project "<project>" --git
 ```
 
-| 看到什么 | 处理 |
+Flags: `--git`, `--no-space` (skip the Herdr space), `--readonly` (store area read-only immediately), `--machine <label>`, `--suffix-sep <char>`, `--no-machine-suffix`.
+
+Result:
+
+```
+<WORK_ROOT>/<project>/     src/ tmp/ logs/ AGENTS.md .gitignore PROGRESS.md .claude/settings.json
+<STORE_ROOT>/<project>@<label>/   OWNER (machine / hostname / store_dir / note)
+```
+
+**A same-named Herdr space is created by default**, with `folder` pointing at the work area. If `herdr-app` is missing it only warns.
+
+**Always verify the space afterwards** (the folder cannot be changed later, and a failure is only a warning):
+
+```sh
+herdr-app ls | grep -A4 "<project>"      # is folder the absolute work area path?
+```
+
+| What you see | What to do |
 |---|---|
-| folder 与工作区一致 | ✅ 完成 |
-| 「空间已存在，跳过」但 folder 不一致 | 同名旧空间占了名字，只能 close 重建（会结束终端），**先问用户** |
-| 「未找到 herdr-app」或建失败 | 目录照常可用，把脚本给的那条命令告诉用户手动执行 |
+| folder matches the work area | done |
+| "space already exists, skipped" and folder differs | an old same-named space owns the name; it can only be closed and recreated (this ends its terminals) — **ask the user first** |
+| "herdr-app not found" or creation failed | directories are fine; hand the user the command the script printed |
 
-## 第四步：告诉用户三件事
+## Step 4: tell the user three things
 
-1. **产物写哪里**：`<存储区>/<项目>@<机器标识>/`。agent 产出交付物时**直接写这里**，不要先写工作区再问；工作区只放 `src/ tmp/ logs/`。
-2. **授权**：`.claude/settings.json` 已把存储区写进 `permissions.additionalDirectories`，Claude 无需额外参数；其他 agent 用 `--add-dir`（qwen 用 `--include-directories`，Codex 用 `tool_config`/`writable_roots`）。
-3. **后缀含义**：另一台机器用 `@<它的标识>`，两份目录并存；要合并手动挑文件，别指望同步自动合并。
+1. **Where deliverables go**: `<STORE_ROOT>/<project>@<label>/`. Agents write there directly; do not write into the work area and ask afterwards. Only `src/ tmp/ logs/` stay in the work area.
+2. **Authorisation**: `.claude/settings.json` already lists the store area under `permissions.additionalDirectories`, so Claude needs no extra flags. Other agents use `--add-dir` (Qwen: `--include-directories`; Codex: sandbox writable roots).
+3. **What the suffix means**: another machine uses `@<its label>`, so both directories coexist. Merging is manual — syncing is not merging.
 
-## 关于 Herdr 空间：folder 建后不可改
+## About Herdr spaces: the folder is fixed at creation
 
-- 没有「全局初始文件夹」设置；目录绑在**空间**上（`docs.json` 的 `spaces[].folder`）
-- App 里点 `+` 新建空间只问名字，folder 默认取**当前聚焦终端的目录**
-- 命令集只有 `space.new / rename / colors / move / select / next / prev / close`，**没有 `set_folder`**
-- 命令行建空间不继承 cwd（脚本调用落在家目录），必须显式 `--folder`
+- There is no global "initial folder" setting; the directory belongs to the **space** (`spaces[].folder` in `docs.json`)
+- The `+` dialog only asks for a name; the folder defaults to **the focused terminal's cwd**
+- The command set is `space.new / rename / colors / move / select / next / prev / close` — there is **no `set_folder`**
+- A space created from the CLI does not inherit the cwd (scripts land in the machine's home), so always pass `--folder`
 
 ```sh
-herdr-app do space.new --name "<项目>" --folder "<工作区绝对路径>"
-herdr-app do space.close --id <空间id> --confirmed true   # 会结束里面的终端
+herdr-app do space.new --name "<project>" --folder "<absolute work area>"
+herdr-app do space.close --id <space-id> --confirmed true   # ends its terminals
 ```
 
-## 脚本缺失时
+## When the script is missing
 
-`command -v new-project` 为空就手工建，并告知用户脚本未安装：
+If `command -v new-project` is empty, create the skeleton by hand and tell the user the script is not installed:
 
 ```sh
 M="$(scutil --get LocalHostName 2>/dev/null || hostname -s)"
-mkdir -p "<工作区>/<项目>"/{src,tmp,logs} "<存储区>/<项目>@$M"
+mkdir -p "<WORK_ROOT>/<project>"/{src,tmp,logs} "<STORE_ROOT>/<project>@$M"
 printf 'machine: %s\nhostname: %s\ncreated: %s\n' "$M" "$(hostname -s)" "$(date +%F)" \
-  > "<存储区>/<项目>@$M/OWNER"
+  > "<STORE_ROOT>/<project>@$M/OWNER"
 ```
 
-## 硬约束
+## Hard constraints
 
-1. **不覆盖已有文件**：`--force` 只补缺失。
-2. **工作区不进同步盘**：命中 iCloud / Dropbox / OneDrive / 坚果云 等要明确警告。
-3. **存储区只写自己标识的目录**，不要合并两台机器的输出。
-4. **不用符号链接**把存储区"映射"进项目——换机、改用户名就断链。
-5. **不移动已有项目目录**：agent 历史按 cwd 绝对路径编码，移动后 `--continue` 找不到旧对话。
-6. **不把 `.git` 放进同步盘**：容易 `index.lock` 残留、坏对象。
+1. **Never overwrite files**: `--force` only fills in what is missing.
+2. **Keep work areas out of sync folders**: warn on iCloud / Dropbox / OneDrive / Google Drive / Nextcloud.
+3. **Write only to your own label's store dir**; do not merge two machines' output.
+4. **No symlinks** mapping the store area into the project — they break on machine or username changes.
+5. **Do not move an existing project**: agent history is keyed by the absolute cwd, so `--continue` loses old sessions.
+6. **Do not put `.git` inside a sync folder**: expect stale `index.lock` files and corrupted objects.

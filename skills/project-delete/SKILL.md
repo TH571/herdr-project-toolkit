@@ -1,109 +1,109 @@
 ---
 name: project-delete
-description: 删除一个项目的全部痕迹——工作区目录、存储区产物、以及对应的 Herdr 空间。用户说「删除项目」「删掉这个项目」「清理项目」「这个项目不要了」「remove project」「delete project」时使用。删除前会列出大小、文件数、git 未提交改动、是否有 DONE、空间里的终端数，必须用户明确确认后才执行；文件移入本地回收站而不是直接删除，可恢复。
+description: Delete every trace of a project — the work area directory, the store area deliverables, and the matching Herdr space. Use when the user says "delete this project", "remove project", "clean up project", or "I don't need this anymore". Always prints a report first (size, file count, uncommitted git changes, DONE marker, terminal count), requires explicit confirmation, and moves files into a local trash folder instead of deleting them.
 ---
 
-# 删除项目（工作区 + 存储区 + 空间）
+# Delete a project (work area + store area + space)
 
-这是**破坏性操作**，也是本仓库里唯一必须停下来等用户点头的技能。其他场景一律自己判断、不要问。
+This is a **destructive operation** and the only skill in this toolkit that must stop and wait for the human. Everything else: decide yourself, do not ask.
 
-## 什么时候用
+## When to use
 
-- 用户明确说「删除 / 删掉 / 清理 / 不要了」某个项目
-- 项目已归档完毕，只剩本地与存储区副本要清
+- The user explicitly says "delete / remove / clean up / I don't need it anymore" about a project
+- The project is archived and only the local and store copies remain
 
-**不适用**：
+**Not for**:
 
-- 只想把产物归档（产物本来就在存储区）
-- 只删某个文件或子目录 → 直接删那个文件
-- 只想关掉终端 → `hc rm <终端地址>`
+- Archiving deliverables (they already live in the store area)
+- Deleting a single file or subdirectory — just delete that file
+- Closing a terminal — use `hc rm <address>`
 
-## 执行流程（五步，一步都不能省）
+## Procedure (six steps, none optional)
 
-**第一步：锁定目标**
+**Step 1: pin down the target**
 
-用户没说清是哪个项目时，先列候选，不要猜：
+If the user has not named one, list candidates instead of guessing:
 
 ```sh
-ls -1 <工作区根>
+ls -1 <WORK_ROOT>
 herdr-app ls | python3 -c 'import json,sys;[print(s["name"],"|",s.get("folder")) for s in json.load(sys.stdin)["spaces"]]'
 ```
 
-**第二步：拿清单（不执行）**
+**Step 2: get the report (nothing is touched)**
 
 ```sh
-delete-project "<项目名>"
+delete-project "<project>"
 ```
 
-不加 `--yes` 时它只打印，不动任何文件：路径、大小、文件数、空间终端数、风险项。
+Without `--yes` it only prints: paths, sizes, file counts, live terminals, and risk warnings.
 
-**第三步：把清单原样复述给用户，等确认**
+**Step 3: restate the report and wait for confirmation**
 
-必须说清四件事：
+Cover four things:
 
-1. 工作区路径 + 大小 + 文件数
-2. 存储区路径 + 大小 + 文件数
-3. 空间是否会被关闭、里面有几个终端（**关闭会立即结束这些终端**）
-4. 所有 ⚠️：未提交改动 / 没有任何提交 / 无 `DONE` / 未推送提交
+1. Work area path + size + file count
+2. Store area path + size + file count
+3. Whether the space will be closed, and how many terminals it holds (**closing ends them immediately**)
+4. Every warning: uncommitted changes / no commits / no `DONE` / unpushed commits
 
-然后**停下来等回复**。这是本技能唯一允许（也是必须）提问的环节。
+Then **stop and wait**. This is the one place in this toolkit where asking is mandatory.
 
-**第四步：在项目之外执行**
+**Step 4: run it from outside the project**
 
-**不要在这个项目自己的终端里跑**。脚本会移走该项目目录、并关闭它所在的空间——那个终端很可能在命令完成前被结束，导致「命令跑了但什么都没发生」。
+**Never run it inside the project's own terminal.** The script moves that directory away and closes the space it lives in — the calling terminal is very likely killed mid-run, which looks like "the command ran but nothing happened".
 
 ```sh
-# A. 换到项目外的目录（推荐）
-cd ~ && delete-project "<项目名>" --yes
+# A. from anywhere outside the project (recommended)
+cd ~ && delete-project "<project>" --yes
 
-# B. 必须在项目内执行时：先只删目录，空间稍后手动关
-delete-project "<项目名>" --yes --keep-space
-herdr-app do space.close --id <空间id> --confirmed true
+# B. if you must stay inside: delete directories only, close the space later
+delete-project "<project>" --yes --keep-space
+herdr-app do space.close --id <space-id> --confirmed true
 ```
 
-脚本自带拦截：在项目目录内直接跑会被拒绝（退出码 2），并给出上面两条建议；确认要冒险时加 `--force-inside`。
+The script refuses to run inside the project directory (exit code 2) and prints both options; `--force-inside` overrides, but nobody needs it.
 
-**第五步：执行后必须核对，不能凭返回码就宣布成功**
+**Step 5: verify, do not trust the exit code**
 
 ```sh
-ls -d <工作区根>/.deleted/*"<项目名>"     # 回收站里必须有这一条
-herdr-app ls | grep "<项目名>"            # 空间必须已消失（可能延迟 1–2 秒）
+ls -d <WORK_ROOT>/.deleted/*"<project>"    # the trash entry must exist
+herdr-app ls | grep "<project>"            # the space must be gone (allow 1-2s)
 ```
 
-三项都要成立才算完成：工作区已移走、存储区已移走、空间已消失。任一项不成立就如实报告「删除未完成」并给出原因，**不要说“已删除”**。
+All three must hold: work area moved, store area moved, space gone. If any fails, report "deletion did not complete" with the reason — **never claim success**.
 
-**第六步：报告结果**
+**Step 6: report the outcome**
 
 ```
-已移入 <工作区根>/.deleted/<时间>-<项目>/
-恢复: mv .../工作区 <工作区根>/<项目>
-      mv .../存储区 <存储区根>/<项目>@<机器标识>
+Moved to <WORK_ROOT>/.deleted/<timestamp>-<project>/
+Restore: mv .../work  <WORK_ROOT>/<project>
+         mv .../store <STORE_ROOT>/<project>@<label>
 ```
 
-## 安全机制（由 delete-project 保证，不要绕过）
+## Safety mechanisms (enforced by delete-project, do not bypass)
 
-| 机制 | 说明 |
+| Mechanism | Behaviour |
 |---|---|
-| 不执行 `rm` | 两个目录整体 `mv` 进 `<工作区根>/.deleted/<时间>-<项目>/`，同卷瞬间完成 |
-| 强制 `--yes` | 不加就只打印清单，永不误删 |
-| 风险预检 | git 未提交、零提交、无 `DONE`、有活动终端，全部标 ⚠️ |
-| 只删本机目录 | 只动 `<项目>@<本机标识>`，另一台机器的目录不碰 |
-| 元数据留档 | 回收站里写 `META.md`（时间、机器、空间 id、原路径、风险项、恢复命令） |
-| 执行后自检 | 搬完再查两个目录是否真的消失，缺一则报「删除未完成」 |
+| No `rm` | both directories are `mv`-ed into `<WORK_ROOT>/.deleted/<timestamp>-<project>/` (instant on the same volume) |
+| `--yes` required | without it the script only prints a report |
+| Risk pre-checks | uncommitted changes, zero commits, missing `DONE`, live terminals — each flagged |
+| This machine only | touches `<project>@<this label>`; other machines' directories are left alone |
+| Metadata | writes `META.md` (timestamp, machine, space id, original paths, risk items, restore commands) |
+| Self-check | after moving, re-checks that both paths are gone and reports failure if not |
 
-## 硬约束
+## Hard constraints
 
-1. **绝不使用 `rm -rf` / `trash` 删项目目录**，一律通过 `delete-project`。绕过会让空间残留、也没有回收站记录。
-2. **绝不跳过确认**：没看到用户明确说「删 / 确认 / 可以」就不执行 `--yes`。
-3. **关闭空间会结束终端**，复述时必须说明，不能用「清理一下」这种模糊说法掩盖。
-4. **不确定目标时先列候选**，不要按名字相似去猜。
-5. **不许只关空间不删目录，也不许只删目录不关空间**。
-6. 删除后不要顺手清回收站；那由用户决定。
+1. **Never use `rm -rf` / `trash` on a project directory** — always `delete-project`. Bypassing it leaves the space behind and leaves no trash record.
+2. **Never skip confirmation**: no explicit "delete / yes / go ahead" from the user means no `--yes`.
+3. **Closing a space ends its terminals** — say so plainly; do not hide it behind "clean up".
+4. **List candidates when unsure**, never guess by name similarity.
+5. **Never close the space without deleting the directories, or delete directories without closing the space.**
+6. Do not empty the trash afterwards; that is the user's decision.
 
-## 彻底清理（用户明确要求时）
+## Purging (only when the user explicitly asks)
 
 ```sh
-rm -rf <工作区根>/.deleted/<时间>-<项目>
+rm -rf <WORK_ROOT>/.deleted/<timestamp>-<project>
 ```
 
-执行前必须再次确认，并说明「此操作不可恢复」。
+Confirm again first and state that it cannot be undone.

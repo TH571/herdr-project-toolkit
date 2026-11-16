@@ -1,10 +1,11 @@
-# 主机名 → 存储区目录里使用的机器标识
+# hostname -> machine label used in store directory names
 #
-# 左边可写 `scutil --get LocalHostName` 或 `hostname -s` 的结果，脚本两种都会查。
-# 右边是目录名后缀，建议短、稳定、全机器唯一。
-# 复制到 ~/.config/new-project/machines.conf 后按本机情况修改。
+# The left side accepts either `scutil --get LocalHostName` or `hostname -s`
+# output; the scripts try both. The right side becomes the @suffix, so keep it
+# short, stable and unique per machine.
+# Copy to ~/.config/new-project/machines.conf and edit.
 
-# 示例
+# examples
 # my-macbook-pro.local = mac-a
 # my-macbook-pro       = mac-a
 # imac-7.local         = iMac-7
