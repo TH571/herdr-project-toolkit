@@ -46,12 +46,17 @@ fi
 
 printf '\n== self-check ==\n'
 for c in new-project delete-project skills-sync; do
-  if command -v "$c" >/dev/null 2>&1; then
-    printf '  %-14s %s\n' "$c" "$("$c" --version)"
+  bin="$HOME/.local/bin/$c"
+  if [ -x "$bin" ]; then
+    printf '  %-14s %s\n' "$c" "$("$bin" --version 2>/dev/null || echo installed)"
   else
-    printf '  %-14s not on PATH; add ~/.local/bin or open a new terminal\n' "$c"
+    printf '  %-14s missing\n' "$c"
   fi
 done
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) printf '  note: ~/.local/bin is not on PATH; add it to use these commands\n' ;;
+esac
 cat <<'TIPS'
 
 Next:

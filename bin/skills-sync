@@ -6,6 +6,10 @@ set -euo pipefail
 VERSION="2.0.0"
 SRC_ROOT="$HOME/.agents/skills"
 
+case "${1:-}" in
+  -V|--version) echo "skills-sync $VERSION"; exit 0 ;;
+esac
+
 [ -d "$SRC_ROOT" ] || { printf 'error: source directory not found: %s\n' "$SRC_ROOT" >&2; exit 1; }
 
 # Claude follows symlinks fine, so it gets links; the rest get real copies.
