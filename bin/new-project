@@ -1,0 +1,372 @@
+#!/usr/bin/env bash
+# new-project.sh — 初始化「工作区 / 存储区」分离的项目骨架
+# 设计原则：工作区可随时整体删除（git 兜底），存储区是唯一成品地。
+set -euo pipefail
+
+VERSION="1.9.0"
+PROG="$(basename "$0")"
+
+CONF="${NEWPROJECT_CONFIG:-$HOME/.config/new-project/config}"
+conf_get() {
+  [ -f "$CONF" ] || return 0
+  awk -F'=' -v k="$1" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    { kk=$1; gsub(/^[[:space:]]+|[[:space:]]+$/,"",kk);
+      if (kk==k) { v=substr($0, index($0,"=")+1); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); print v; exit } }
+  ' "$CONF"
+}
+
+WORK_ROOT="${NEWPROJECT_WORK_ROOT:-$(conf_get WORK_ROOT)}"
+[ -n "$WORK_ROOT" ] || WORK_ROOT="$HOME/Projects"
+STORE_ROOT="${NEWPROJECT_STORE_ROOT:-$(conf_get STORE_ROOT)}"
+[ -n "$STORE_ROOT" ] || STORE_ROOT="$HOME/Projects-archive"
+MACHINES_CONF="${NEWPROJECT_MACHINES_CONF:-$HOME/.config/new-project/machines.conf}"
+HOSTNAME_RAW="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || echo unknown)"
+
+# 主机名 → 机器标识 的映射（用于存储区目录名与 OWNER）
+conf_lookup() {
+  _h="$1"
+  [ -f "$MACHINES_CONF" ] || { printf '%s' "$_h"; return; }
+  _v="$(awk -F'=' -v h="$_h" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    { k=$1; gsub(/^[[:space:]]+|[[:space:]]+$/,"",k);
+      if (k==h) { v=substr($0, index($0,"=")+1); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); print v; exit } }
+  ' "$MACHINES_CONF")"
+  if [ -n "${_v:-}" ]; then printf '%s' "$_v"; else printf '%s' "$_h"; fi
+}
+
+OWNER="${NEWPROJECT_OWNER:-${NEWPROJECT_MACHINE:-$(conf_lookup "$HOSTNAME_RAW")}}"
+
+NAME=""
+DO_GIT=0
+DRY=0
+READONLY=0
+FORCE=0
+MACHINE_SUFFIX=1
+SUFFIX_SEP="${NEWPROJECT_SUFFIX_SEP:-@}"
+SUFFIX_OVERRIDE="${NEWPROJECT_SUFFIX:-}"
+MAKE_SPACE=1
+
+usage() {
+  cat <<EOF
+$PROG $VERSION — 初始化工作区与存储区分离的项目
+
+用法:
+  $PROG <项目名> [选项]
+
+选项:
+  --work-root <dir>    工作区根目录（默认 ${WORK_ROOT}）
+  --store-root <dir>   存储区根目录（默认 ${STORE_ROOT}）
+  --owner <名字>       机器标识（默认由主机名 ${HOSTNAME_RAW} 查 ${MACHINES_CONF} 得到：${OWNER}）
+  --machine <名字>     同 --owner，语义更清楚
+  --suffix <文本>      存储区目录名的机器后缀（默认取机器标识的值）
+  --suffix-sep <字符>  后缀分隔符（默认 @）
+  --no-machine-suffix  存储区目录名不带机器后缀（两台机器会争用同一目录）
+  --git                在工作区执行 git init
+  --no-space           不建 Herdr 空间（默认会建，folder 指向工作区）
+  --readonly           建好后把存储区设为只读（chmod -R a-w）
+  --dry-run            只打印将创建的路径与文件，不落盘
+  --force              目录已存在时补齐缺失文件（绝不覆盖已有文件）
+  -h, --help           显示帮助
+  -V, --version        显示版本
+
+生成结构:
+  工作区  \$WORK_ROOT/<项目>/               src/ tmp/ logs/ AGENTS.md .gitignore PROGRESS.md
+  存储区  \$STORE_ROOT/<项目>@<机器名>/     OWNER
+
+环境变量:
+  NEWPROJECT_WORK_ROOT / NEWPROJECT_STORE_ROOT / NEWPROJECT_CONFIG
+  NEWPROJECT_MACHINE 或 NEWPROJECT_OWNER（机器标识）
+  NEWPROJECT_MACHINES_CONF（主机名→机器标识 的映射文件，默认 ~/.config/new-project/machines.conf）
+  NEWPROJECT_SUFFIX（机器后缀文本）/ NEWPROJECT_SUFFIX_SEP（分隔符）
+
+示例:
+  $PROG 客户报表 --git
+  $PROG 客户报表 --dry-run
+EOF
+}
+
+die() { printf '错误: %s\n' "$*" >&2; exit 1; }
+info() { printf '%s\n' "$*"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -V|--version) echo "$PROG $VERSION"; exit 0 ;;
+    --work-root) [ $# -ge 2 ] || die "--work-root 需要参数"; WORK_ROOT="$2"; shift 2 ;;
+    --store-root) [ $# -ge 2 ] || die "--store-root 需要参数"; STORE_ROOT="$2"; shift 2 ;;
+    --owner) [ $# -ge 2 ] || die "--owner 需要参数"; OWNER="$2"; shift 2 ;;
+    --machine) [ $# -ge 2 ] || die "--machine 需要参数"; OWNER="$2"; shift 2 ;;
+    --suffix) [ $# -ge 2 ] || die "--suffix 需要参数"; SUFFIX_OVERRIDE="$2"; shift 2 ;;
+    --suffix-sep) [ $# -ge 2 ] || die "--suffix-sep 需要参数"; SUFFIX_SEP="$2"; shift 2 ;;
+    --no-machine-suffix) MACHINE_SUFFIX=0; shift ;;
+    --git) DO_GIT=1; shift ;;
+    --space) MAKE_SPACE=1; shift ;;
+    --no-space) MAKE_SPACE=0; shift ;;
+    --readonly) READONLY=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --force) FORCE=1; shift ;;
+    -*) die "未知选项: $1（用 --help 查看用法）" ;;
+    *)
+      [ -z "$NAME" ] || die "只能指定一个项目名"
+      NAME="$1"; shift ;;
+  esac
+done
+
+[ -n "$NAME" ] || { usage; exit 1; }
+case "$NAME" in
+  */*) die "项目名不能包含斜杠" ;;
+  .*) die "项目名不能以点开头" ;;
+esac
+[ "$NAME" = "." ] && die "项目名非法"
+
+# 机器名后缀：每台机器在存储区各有独立目录，避免同步冲突
+MACHINE="$(printf '%s' "$OWNER" | sed 's#[/:]#-#g; s/[[:space:]]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//')"
+SUFFIX_TEXT="${SUFFIX_OVERRIDE:-$MACHINE}"
+if [ "$MACHINE_SUFFIX" -eq 1 ] && [ -n "$SUFFIX_TEXT" ]; then
+  STORE_NAME="$NAME${SUFFIX_SEP}${SUFFIX_TEXT}"
+else
+  STORE_NAME="$NAME"
+fi
+
+WORK="$WORK_ROOT/$NAME"
+STORE="$STORE_ROOT/$STORE_NAME"
+TODAY="$(date '+%Y-%m-%d')"
+
+# 安全警告：工作区落在同步盘会引入冲突；存储区仅在关闭机器后缀时才危险
+warn_sync() {
+  case "$1" in
+    *"iCloud"*|*"CloudStorage"*|*"Dropbox"*|*"OneDrive"*|*"Google Drive"*|*"坚果云"*|*"Nutstore"*)
+      printf '⚠️  %s\n' "$2" >&2 ;;
+  esac
+}
+warn_sync "$WORK" "工作区 $WORK 位于同步盘内，两台机器同时写会产生冲突副本。建议把工作区放本地盘。"
+if [ "$MACHINE_SUFFIX" -eq 0 ]; then
+  warn_sync "$STORE" "存储区 $STORE 位于同步盘内且关闭了机器后缀（--no-machine-suffix），两台机器会争用同一目录。"
+fi
+
+if [ $DRY -eq 1 ]; then
+  info "=== 预览（未落盘）==="
+  info "工作区: $WORK"
+  info "  将创建 src/ tmp/ logs/"
+  info "  将写入 AGENTS.md / .gitignore / PROGRESS.md / .claude/settings.json"
+  [ $DO_GIT -eq 1 ] && info "  将执行 git init"
+  if [ $MAKE_SPACE -eq 1 ]; then
+    info "  将建 Herdr 空间: ${NAME}（folder=${WORK}）"
+  fi
+  info "存储区: $STORE"
+  if [ "$MACHINE_SUFFIX" -eq 1 ]; then
+    info "  目录名带机器后缀: ${STORE_NAME}（另一台机器会用 ${NAME}${SUFFIX_SEP}<它的机器标识>）"
+  fi
+  info "  将写入 OWNER（machine: ${OWNER}）"
+  [ $READONLY -eq 1 ] && info "  将执行 chmod -R a-w"
+  exit 0
+fi
+
+if [ -e "$WORK" ] || [ -e "$STORE" ]; then
+  if [ $FORCE -eq 0 ]; then
+    die "已存在: $WORK 或 ${STORE}（用 --force 补齐缺失文件，已有文件不会被覆盖）"
+  fi
+  info "目录已存在，--force 模式：只补齐缺失文件"
+fi
+
+mkdir -p "$WORK/src" "$WORK/tmp" "$WORK/logs" "$STORE"
+
+# ---------- AGENTS.md ----------
+AGENTS="$WORK/AGENTS.md"
+if [ -e "$AGENTS" ]; then
+  info "跳过（已存在）: AGENTS.md"
+else
+  cat > "$AGENTS" <<AGENTSEOF
+# 项目约定 · $NAME
+
+> 由 \`new-project\` 生成于 ${TODAY}，写入点：${OWNER}。
+> Claude / Codex / Qwen / omp / opencode 启动时都会读本文件。
+
+## 一、三区职责
+
+| 区 | 路径 | 放什么 | 生命周期 |
+|---|---|---|---|
+| 工作区 | \`$WORK\` | 代码、草稿、日志、缓存、中间数据 | 项目结束可整目录删除 |
+| **存储区** | \`$STORE\` | **所有交付物，默认写这里** | 永久，群晖同步备份 |
+
+## 二、硬规则（优先级从高到低）
+
+1. **产出交付物的那一刻就直接写进存储区** \`$STORE/\`。不要先写在工作区、再问用户、再复制。
+2. **禁止询问**「这是不是产物」「要不要保存到产物区」「需要我归档吗」。按下面第三节自行判定；**判定不了就按产物处理，直接写存储区**，不要打断用户。
+3. 过程文件（草稿、日志、缓存、中间数据、临时脚本、报错输出）只写工作区 \`src/\` \`tmp/\` \`logs/\`。
+4. 存储区里保持有意义的子目录结构与文件名，不要出现 \`未命名.md\`、\`new file 2.txt\` 这类。
+5. 不把 \`.git\`、\`node_modules\`、\`.venv\`、缓存、任何密钥文件写进存储区。
+
+## 三、产物判定规则（照此执行，不要问）
+
+**是产物 → 直接写 \`$STORE/\`：**
+
+| 类型 | 典型形式 |
+|---|---|
+| 文档/报告 | \`.md\` \`.docx\` \`.pdf\` \`.txt\` 的成品、方案、纪要、说明 |
+| 数据表 | \`.xlsx\` \`.csv\` \`.numbers\` 的结果表、清单、台账 |
+| 演示/图表 | \`.pptx\` \`.key\`、导出的 \`.png\` \`.jpg\` \`.svg\` 图 |
+| 可直接交付的页面/程序 | 成品 \`.html\`、打包好的可执行文件、安装包 |
+| 可复用工具 | 别人要拿去用的脚本（一次性脚本不算） |
+
+**不是产物 → 留在工作区：**
+
+- 草稿、废稿、试验版本、临时对比文件
+- 日志、缓存、\`__pycache__\`、\`node_modules\`、\`.venv\`
+- 中间数据、下载的原始素材、解压出来的临时目录
+- 一次性迁移/调试脚本
+
+**拿不准时的默认动作**：先写进存储区的 \`_待确认/\` 子目录，事后由人决定去留。宁可多存，不要问。
+
+## 四、收尾
+
+\`\`\`sh
+date '+%Y-%m-%d 完成' > DONE    # 标记完成
+\`\`\`
+
+产物已在存储区，工作区确认没有遗漏后可整目录删除（有 git 的话先 push）。
+**不要移动工作区**：agent 对话历史按 cwd 绝对路径编码，移动后 \`--continue\` 就找不到旧对话。
+
+AGENTSEOF
+  info "已写入: AGENTS.md"
+fi
+
+# ---------- .gitignore ----------
+GI="$WORK/.gitignore"
+if [ -e "$GI" ]; then
+  info "跳过（已存在）: .gitignore"
+else
+  cat > "$GI" <<'GIEOF'
+# 本机 agent 配置（不提交）
+.claude/settings.local.json
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v3/
+.aider.tags.cache.*/
+
+# 运行产物
+__pycache__/
+.pytest_cache/
+.venv/
+node_modules/
+dist/
+build/
+*.log
+*.tmp
+.DS_Store
+
+# 本地临时与完成标记
+tmp/
+logs/
+DONE
+GIEOF
+  info "已写入: .gitignore"
+fi
+
+# ---------- Claude 额外可写目录（避免它写存储区时反复要授权）----------
+CL="$WORK/.claude/settings.json"
+if [ -e "$CL" ]; then
+  info "跳过（已存在）: .claude/settings.json"
+else
+  mkdir -p "$WORK/.claude"
+  printf '{\n  "permissions": {\n    "additionalDirectories": ["%s"]\n  }\n}\n' "$STORE" > "$CL"
+  info "已写入: .claude/settings.json（授权存储区）"
+fi
+
+# ---------- PROGRESS.md ----------
+PG="$WORK/PROGRESS.md"
+if [ -e "$PG" ]; then
+  info "跳过（已存在）: PROGRESS.md"
+else
+  cat > "$PG" <<PGEOF
+# $NAME
+
+> 跨轮状态。只写三行，别写成日报。第 20 章的 \`HANDOFF.md\` 是单轮交接单，两者别混。
+
+## 已完成
+-
+
+## 下一步
+-
+
+## 卡点
+-
+PGEOF
+  info "已写入: PROGRESS.md"
+fi
+
+# ---------- OWNER ----------
+OW="$STORE/OWNER"
+if [ -e "$OW" ]; then
+  info "跳过（已存在）: OWNER"
+else
+  cat > "$OW" <<OWEOF
+machine: $OWNER
+hostname: $HOSTNAME_RAW
+created: $TODAY
+store_dir: $STORE_NAME
+note: 本目录由 $OWNER 独占写入。另一台机器在同一存储根下用「${NAME}${SUFFIX_SEP}<它的机器标识>」写自己的目录，两边不会互相覆盖；需要合并时手动挑文件。
+OWEOF
+  info "已写入: 存储区 OWNER（machine: ${OWNER}，目录 ${STORE_NAME}）"
+fi
+
+# ---------- git ----------
+if [ $DO_GIT -eq 1 ]; then
+  if [ -d "$WORK/.git" ]; then
+    info "跳过（已是 git 仓库）: .git"
+  else
+    git -C "$WORK" init -q
+    info "已执行: git init"
+  fi
+fi
+
+if [ $READONLY -eq 1 ]; then
+  chmod -R a-w "$STORE"
+  info "已执行: chmod -R a-w 存储区（恢复写权限用 chmod -R u+w）"
+fi
+
+# ---------- Herdr 空间（默认建；folder 建后不可改，所以必须在创建时就指对）----------
+if [ $MAKE_SPACE -eq 1 ]; then
+  if command -v herdr-app >/dev/null 2>&1; then
+    _exist=0
+    if herdr-app ls 2>/dev/null | python3 -c '
+import json,sys
+name = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if any(s.get("name") == name for s in d.get("spaces", [])) else 1)
+' "$NAME" 2>/dev/null; then
+      _exist=1
+    fi
+    if [ "$_exist" -eq 1 ]; then
+      info "Herdr 空间已存在，跳过: ${NAME}"
+    elif _out="$(herdr-app do space.new --name "$NAME" --folder "$WORK" 2>&1)"; then
+      info "已建 Herdr 空间: ${NAME}（folder=${WORK}）"
+    else
+      info "⚠️  建 Herdr 空间失败（工作区已建好，不影响使用），可手动重试:"
+      info "    herdr-app do space.new --name \"$NAME\" --folder \"$WORK\""
+      printf '%s\n' "$_out" | head -5 | sed 's/^/    /'
+    fi
+  else
+    info "⚠️  未找到 herdr-app，跳过建空间"
+  fi
+fi
+
+info ""
+info "=== 完成 ==="
+info "工作区: $WORK"
+info "  └── src/ tmp/ logs/   ← 过程文件"
+info "存储区: $STORE"
+if [ "$MACHINE_SUFFIX" -eq 1 ]; then
+  info "  （目录名带机器后缀，另一台机器写入 ${NAME}${SUFFIX_SEP}<它的机器标识>，互不覆盖）"
+fi
+info ""
+info "下一步:"
+info "  cd \"$WORK\""
+info "  产物直接写存储区，不要问用户「这是不是产物」—— 规则见 AGENTS.md 第三节"
+info "  Claude 已通过 .claude/settings.json 授权存储区；其他 agent 用 --add-dir"

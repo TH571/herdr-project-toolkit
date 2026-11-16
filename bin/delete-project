@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# delete-project.sh — 删除一个项目：工作区 + 存储区 + Herdr 空间
+# 安全策略：默认移入本地回收站（可恢复），不直接 rm；必须显式 --yes 才执行。
+set -euo pipefail
+
+VERSION="1.2.0"
+CONF="${DELPROJ_CONFIG:-$HOME/.config/new-project/config}"
+conf_get() {
+  [ -f "$CONF" ] || return 0
+  awk -F'=' -v k="$1" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    { kk=$1; gsub(/^[[:space:]]+|[[:space:]]+$/,"",kk);
+      if (kk==k) { v=substr($0, index($0,"=")+1); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); print v; exit } }
+  ' "$CONF"
+}
+
+WORK_ROOT="${DELPROJ_WORK_ROOT:-$(conf_get WORK_ROOT)}"
+[ -n "$WORK_ROOT" ] || WORK_ROOT="$HOME/Projects"
+STORE_ROOT="${DELPROJ_STORE_ROOT:-$(conf_get STORE_ROOT)}"
+[ -n "$STORE_ROOT" ] || STORE_ROOT="$HOME/Projects-archive"
+MACHINES_CONF="${DELPROJ_MACHINES_CONF:-$HOME/.config/new-project/machines.conf}"
+HOSTNAME_RAW="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || echo unknown)"
+
+TARGET=""; YES=0; DRY=0; KEEP_SPACE=0; FORCE_INSIDE=0
+
+usage() {
+  cat <<EOF
+delete-project $VERSION — 删除项目的工作区、存储区与 Herdr 空间
+
+用法:
+  delete-project <项目名|工作区路径> [选项]
+
+选项:
+  --yes           确认执行（不加只打印清单，不动任何文件）
+  --dry-run       同不加 --yes
+  --keep-space    保留 Herdr 空间（默认会关闭，空间里的终端会被结束）
+  -h, --help
+
+安全策略:
+  - 不执行 rm。工作区与存储区整体移动到 $WORK_ROOT/.deleted/<时间>-<项目>/
+  - 删除前打印：大小、文件数、git 未提交改动、是否有 DONE、空间终端数
+  - 只处理本机标识的存储区目录（<项目>@<机器标识>），不动其他机器的目录
+
+恢复:
+  mv "$WORK_ROOT/.deleted/<时间>-<项目>/工作区" "$WORK_ROOT/<项目>"
+  mv "$WORK_ROOT/.deleted/<时间>-<项目>/存储区" "$STORE_ROOT/<项目>@<机器标识>"
+EOF
+}
+
+info() { printf '%s\n' "$*"; }
+warn() { printf '⚠️  %s\n' "$*" >&2; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -V|--version) echo "delete-project $VERSION"; exit 0 ;;
+    --yes) YES=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --keep-space) KEEP_SPACE=1; shift ;;
+    --force-inside) FORCE_INSIDE=1; shift ;;
+    -*) printf '未知选项: %s\n' "$1" >&2; exit 1 ;;
+    *) TARGET="$1"; shift ;;
+  esac
+done
+
+[ -n "$TARGET" ] || { usage; exit 1; }
+
+conf_lookup() {
+  _h="$1"
+  [ -f "$MACHINES_CONF" ] || { printf '%s' "$_h"; return; }
+  _v="$(awk -F'=' -v h="$_h" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    { k=$1; gsub(/^[[:space:]]+|[[:space:]]+$/,"",k);
+      if (k==h) { v=substr($0, index($0,"=")+1); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); print v; exit } }
+  ' "$MACHINES_CONF")"
+  if [ -n "${_v:-}" ]; then printf '%s' "$_v"; else printf '%s' "$_h"; fi
+}
+MACHINE="$(conf_lookup "$HOSTNAME_RAW")"
+MACHINE="$(printf '%s' "$MACHINE" | sed 's#[/:]#-#g; s/[[:space:]]/-/g; s/-\{2,\}/-/g')"
+
+# 解析目标
+case "$TARGET" in
+  */*) WORK="${TARGET%/}"; NAME="$(basename "$WORK")" ;;
+  *) NAME="$TARGET"; WORK="$WORK_ROOT/$NAME" ;;
+esac
+STORE="$STORE_ROOT/${NAME}@${MACHINE}"
+LEGACY_STORE="$STORE_ROOT/$NAME"
+
+[ -d "$WORK" ] || [ -d "$STORE" ] || { printf '错误: 找不到项目 %s\n  工作区: %s\n  存储区: %s\n' "$NAME" "$WORK" "$STORE" >&2; exit 1; }
+
+
+# 防止在项目自己的终端里执行：移走 cwd + 关闭所在空间会让当前命令中途被中断
+if [ "$KEEP_SPACE" -eq 0 ] && [ "$FORCE_INSIDE" -eq 0 ]; then
+  case "$(pwd)" in
+    "$WORK"|"$WORK"/*)
+      warn "当前目录在项目内：$(pwd)"
+      warn "脚本会移动该目录并关闭它所在的空间，当前终端很可能在命令完成前被结束。"
+      warn "建议：先 cd 到项目外再执行；或加 --keep-space 只删目录、空间稍后手动关。"
+      warn "确实要这样跑：加 --force-inside 跳过此检查。"
+      printf '\n未执行。\n'
+      exit 2 ;;
+  esac
+fi
+
+# Herdr 空间
+SPACE_ID=""; SPACE_TERMS=0
+if command -v herdr-app >/dev/null 2>&1; then
+  _j="$(herdr-app ls 2>/dev/null || true)"
+  if [ -n "$_j" ]; then
+    eval "$(printf '%s' "$_j" | python3 -c '
+import json,sys,os
+name=sys.argv[1]; folder=os.path.normpath(sys.argv[2])
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(1)
+def norm(p): return os.path.normpath(p) if p else ""
+for s in d.get("spaces",[]):
+    if s.get("name")==name or norm(s.get("folder",""))==folder:
+        n=sum(len(t.get("terminals",[])) for t in s.get("tabs",[]))
+        print("SPACE_ID=%s" % s.get("id"))
+        print("SPACE_TERMS=%d" % n)
+        break
+' "$NAME" "$WORK" 2>/dev/null || true)"
+  fi
+fi
+
+size_of() { [ -d "$1" ] && du -sh "$1" 2>/dev/null | awk '{print $1}' || echo "-"; }
+files_of() { [ -d "$1" ] && find "$1" -type f ! -path '*/.git/*' 2>/dev/null | wc -l | tr -d ' ' || echo 0; }
+
+info "=== 将删除：$NAME ==="
+printf '  工作区  %-58s %8s  %5s 个文件\n' "$WORK" "$(size_of "$WORK")" "$(files_of "$WORK")"
+printf '  存储区  %-58s %8s  %5s 个文件\n' "$STORE" "$(size_of "$STORE")" "$(files_of "$STORE")"
+if [ "$SPACE_ID" != "" ]; then
+  printf '  空间    %-58s 终端 %s 个（会一并结束）\n' "$NAME" "$SPACE_TERMS"
+else
+  printf '  空间    %-58s 未找到\n' "$NAME"
+fi
+[ -d "$LEGACY_STORE" ] && info "  提示：还存在旧命名目录 ${LEGACY_STORE}（不会删除，请自行处理）"
+
+# 风险检查
+RISKS=0
+if [ -d "$WORK/.git" ]; then
+  _dirty="$(git -C "$WORK" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+  _commits="$(git -C "$WORK" rev-list --count HEAD 2>/dev/null || echo 0)"
+  if [ "$_dirty" -gt 0 ]; then warn "工作区有 $_dirty 处未提交改动"; RISKS=$((RISKS+1)); fi
+  if [ "$_commits" -eq 0 ]; then warn "git 仓库还没有任何提交（删了就没有历史）"; RISKS=$((RISKS+1)); fi
+  if git -C "$WORK" remote 2>/dev/null | grep -q .; then
+    _unpushed="$(git -C "$WORK" log --oneline @{u}.. 2>/dev/null | wc -l | tr -d ' ')"
+    [ "${_unpushed:-0}" -gt 0 ] && { warn "有 $_unpushed 个提交未推送"; RISKS=$((RISKS+1)); }
+  fi
+fi
+[ -f "$WORK/DONE" ] || { warn "工作区没有 DONE 标记，项目可能还没完成"; RISKS=$((RISKS+1)); }
+[ "$SPACE_TERMS" -gt 0 ] && { warn "空间里有 $SPACE_TERMS 个终端，关闭会立即结束它们"; RISKS=$((RISKS+1)); }
+
+if [ "$YES" -eq 0 ] || [ "$DRY" -eq 1 ]; then
+  info ""
+  info "未执行。确认无误后加 --yes 重跑："
+  if [ "$KEEP_SPACE" -eq 1 ]; then
+    info "  delete-project \"$NAME\" --yes --keep-space"
+  else
+    info "  delete-project \"$NAME\" --yes"
+  fi
+  exit 0
+fi
+
+# 执行：移动到本地回收站
+TS="$(date '+%Y%m%d-%H%M%S')"
+TRASH_DIR="$WORK_ROOT/.deleted/${TS}-${NAME}"
+mkdir -p "$TRASH_DIR"
+info ""
+info "移入回收站: $TRASH_DIR"
+[ -d "$WORK" ] && mv "$WORK" "$TRASH_DIR/工作区"
+[ -d "$STORE" ] && mv "$STORE" "$TRASH_DIR/存储区"
+
+cat > "$TRASH_DIR/META.md" <<METAEOF
+# 已删除：$NAME
+
+- 时间: $(date '+%Y-%m-%d %H:%M:%S')
+- 机器标识: ${MACHINE}（主机名 ${HOSTNAME_RAW}）
+- Herdr 空间: ${SPACE_ID:-无}（终端 ${SPACE_TERMS} 个）
+- 原工作区: $WORK
+- 原存储区: $STORE
+- 风险项: $RISKS 项（未提交改动 / 无提交 / 无 DONE / 有活动终端，详见删除时输出）
+
+## 恢复
+
+\`\`\`sh
+mv "$TRASH_DIR/工作区" "$WORK"
+mv "$TRASH_DIR/存储区" "$STORE"
+\`\`\`
+
+## 彻底清理
+
+确认不需要后: rm -rf "$TRASH_DIR"
+METAEOF
+
+
+_miss=0
+[ -d "$WORK" ] && { warn "工作区未移走: $WORK"; _miss=1; }
+[ -d "$STORE" ] && { warn "存储区未移走: $STORE"; _miss=1; }
+[ "$_miss" -eq 1 ] && warn "删除未完成，请检查上面的报错"
+
+if [ "$KEEP_SPACE" -eq 0 ] && [ "$SPACE_ID" != "" ]; then
+  _r="$(herdr-app do space.close --id "$SPACE_ID" --confirmed true 2>&1 || true)"
+  sleep 1
+  _left="$(herdr-app ls 2>/dev/null | python3 -c '
+import json,sys
+sid=sys.argv[1]
+try: d=json.load(sys.stdin)
+except Exception: print("unknown"); raise SystemExit
+print("yes" if any(s.get("id")==sid for s in d.get("spaces",[])) else "no")
+' "$SPACE_ID" 2>/dev/null || echo unknown)"
+  if [ "$_left" = "no" ]; then
+    info "已关闭空间: ${NAME}（id ${SPACE_ID}）"
+  else
+    warn "空间仍在（id ${SPACE_ID}），close 返回: $(printf '%s' "$_r" | tr -d '\n' | cut -c1-120)"
+    warn "手动重试: herdr-app do space.close --id $SPACE_ID --confirmed true"
+  fi
+fi
+
+info ""
+info "=== 完成 ==="
+info "  回收站: $TRASH_DIR"
+info "  恢复:   mv \"$TRASH_DIR/工作区\" \"$WORK\""
+info "          mv \"$TRASH_DIR/存储区\" \"$STORE\""
+info "  彻底删: rm -rf \"$TRASH_DIR\""

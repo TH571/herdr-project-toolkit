@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# skills-sync — 把 ~/.agents/skills 下的全部技能同步到所有 Agent 的 skills 目录
+# 源：~/.agents/skills/<name>（omp 直接读这里）
+set -euo pipefail
+
+VERSION="2.0.0"
+SRC_ROOT="$HOME/.agents/skills"
+
+[ -d "$SRC_ROOT" ] || { printf '错误: 源目录不存在 %s\n' "$SRC_ROOT" >&2; exit 1; }
+
+LINK_DIRS=("$HOME/.claude/skills")
+COPY_DIRS=(
+  "$HOME/.qwen/skills"
+  "$HOME/.codex/skills"
+  "$HOME/.opencode/skills"
+  "$HOME/.workbuddy/skills"
+  "$HOME/.codebuddy/skills"
+  "$HOME/.commandcode/skills"
+  "$HOME/.dsh/skills"
+  "$HOME/.hermes/skills"
+  "$HOME/.minimax/skills"
+  "$HOME/.qoder-cn/skills"
+  "$HOME/.reasonix/skills"
+  "$HOME/.trae-cn/skills"
+)
+
+h() { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
+
+WANT=("$@")
+want_match() {
+  [ "${#WANT[@]}" -eq 0 ] && return 0
+  for w in "${WANT[@]}"; do [ "$w" = "$1" ] && return 0; done
+  return 1
+}
+
+total=0; bad=0
+for SRC in "$SRC_ROOT"/*/; do
+  SRC="${SRC%/}"
+  NAME="$(basename "$SRC")"
+  [ -f "$SRC/SKILL.md" ] || continue
+  want_match "$NAME" || continue
+  total=$((total+1))
+  printf '\n[%s]\n' "$NAME"
+
+  for d in "${LINK_DIRS[@]}"; do
+    mkdir -p "$d"
+    rm -rf "$d/$NAME"
+    ln -s "../../.agents/skills/$NAME" "$d/$NAME"
+    printf '  软链  %s\n' "$(printf '%s' "$d" | sed "s|$HOME|~|")"
+  done
+
+  _copied=0
+  for d in "${COPY_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    rm -rf "$d/$NAME"
+    cp -R "$SRC" "$d/$NAME"
+    _copied=$((_copied+1))
+  done
+  printf '  副本  %s 处\n' "$_copied"
+done
+
+printf '\n=== 一致性校验 ===\n'
+for SRC in "$SRC_ROOT"/*/; do
+  SRC="${SRC%/}"
+  NAME="$(basename "$SRC")"
+  [ -f "$SRC/SKILL.md" ] || continue
+  want_match "$NAME" || continue
+  _h=$(h "$SRC/SKILL.md")
+  _n=0
+  for d in "${LINK_DIRS[@]}" "${COPY_DIRS[@]}"; do
+    f="$d/$NAME/SKILL.md"
+    [ -f "$f" ] || continue
+    _n=$((_n+1))
+    if [ "$(h "$f")" != "$_h" ]; then
+      printf '  !! %s 不一致: %s\n' "$NAME" "$f"
+      bad=$((bad+1))
+    fi
+  done
+  printf '  %-18s 安装点 %2s 处  哈希 %s\n' "$NAME" "$_n" "${_h:0:8}"
+done
+
+printf '\n共 %s 个技能' "$total"
+[ "$bad" -eq 0 ] && printf '，全部一致 ✓\n' || { printf '，%s 处不一致 ✗\n' "$bad"; exit 1; }
+printf '提示：Codex 不读 SKILL.md，它看 ~/.codex/AGENTS.md；WorkBuddy 需重开对话才刷新列表。\n'
