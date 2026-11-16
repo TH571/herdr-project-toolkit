@@ -113,6 +113,10 @@ imac-7=iMac-7
 | 脚本报 `unbound variable: NAME�` | bash 3.2 里 `$VAR` 紧跟中文标点被吞 | 脚本内一律写 `${VAR}`（已修） |
 | Agent 不读 `SKILL.md` | Codex 0.169 没有 skills 机制 | 规则另写到 `~/.codex/AGENTS.md` |
 
+## 设计说明
+
+[`docs/22-project-lifecycle.md`](docs/22-project-lifecycle.md) 是这套工具的设计依据，讲清了三区模型、为什么存储区要按机器分区、产物判定为什么写成规则而不是每次问人、删除为什么不用 `rm`，以及这一路踩到的 8 个坑。
+
 ## 目录结构
 
 ```
@@ -122,6 +126,7 @@ bin/skills-sync       技能分发与哈希校验
 skills/project-init/  初始化技能
 skills/project-delete/删除技能
 config/               配置模板
+docs/                 设计说明
 ```
 
 ## License
